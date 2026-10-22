@@ -1,0 +1,75 @@
+# ---------------------------------------------------------------
+#  Job Search Engine - settings. Edit this file, then run run.bat
+#  Logins live in .env (never in this file).
+# ---------------------------------------------------------------
+
+sites:              # turn a portal on/off
+  linkedin: true
+  naukri: true
+  foundit: true
+  indeed: true
+
+search:
+  keywords:
+    - QA Engineer
+    - Software Tester
+    - Manual Testing
+    - Test Engineer
+    - QA Analyst
+  locations:
+    - Bangalore
+  min_experience: 0
+  max_experience: 2
+  posted_within_days: 7
+  pages_per_search: 2
+  max_applications_per_site: 15   # keep this low - portals flag accounts that apply too fast
+  # Skip jobs whose title contains any of these words
+  exclude_title_words: [Senior, Sr, Lead, Manager, Architect, Principal, Director, Head]
+  exclude_companies: []
+
+browser:
+  brave_path: ""                  # leave empty to auto-detect
+  profile_dir: brave_profile      # separate Brave profile that remembers your logins
+
+profile:
+  first_name: Nisha
+  last_name: Salehittal
+  full_name: Nisha Salehittal
+  email: nishavsalehittal572@gmail.com
+  phone: "8431442813"
+  city: Bangalore
+  github: https://github.com/NISHA527
+  linkedin_url: ""
+  years_experience: 1
+  # Sent to employers. Leave CTC blank ("") and jobs that ask for it are skipped instead of guessed.
+  notice_period_days: 30
+  current_ctc: ""
+  expected_ctc: ""
+  resume_file: resume.pdf         # put your resume in the documents folder
+  photo_file: photo.jpg           # optional
+  cover_letter_file: cover_letter.txt
+
+# Answers to screening questions. The first rule whose "match" (a regex,
+# case-insensitive) is found in the question wins. A list gives alternatives
+# for dropdowns/radio buttons. {field} is filled from the profile above.
+answers:
+  - {match: "first name",                          answer: "{first_name}"}
+  - {match: "last name|surname",                   answer: "{last_name}"}
+  - {match: "full name|^name$|your name",          answer: "{full_name}"}
+  - {match: "e-?mail",                             answer: "{email}"}
+  - {match: "mobile|phone|contact number",         answer: "{phone}"}
+  - {match: "github|portfolio|website",            answer: "{github}"}
+  - {match: "linkedin",                            answer: "{linkedin_url}"}
+  - {match: "cover letter",                        answer: "{cover_letter}"}
+  - {match: "notice",                              answer: ["{notice_period_days}", "1 Month", "30 Days", "15 to 30"]}
+  - {match: "expected.*(ctc|salary|compensation|package)", answer: "{expected_ctc}"}
+  - {match: "current.*(ctc|salary|compensation|package)",  answer: "{current_ctc}"}
+  - {match: "ctc|salary|compensation",             answer: "{expected_ctc}"}
+  - {match: "how many years|years of|years.*experience|experience.*years", answer: "{years_experience}"}
+  - {match: "city|current location|where are you|located|location", answer: "{city}"}
+  - {match: "relocat|commut|on-?site|office|hybrid", answer: "Yes"}
+  - {match: "sponsor",                             answer: "No"}
+  - {match: "authori[sz]ed|legally|eligible to work", answer: "Yes"}
+  - {match: "bachelor|degree|graduat|b\\.?tech|b\\.?e\\b", answer: "Yes"}
+  - {match: "english",                             answer: ["Professional", "Fluent", "Yes"]}
+  - {match: "immediate|join",                      answer: "Yes"}

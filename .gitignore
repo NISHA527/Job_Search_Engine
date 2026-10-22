@@ -1,0 +1,7 @@
+.env
+brave_profile/
+data/
+documents/*
+!documents/README.txt
+__pycache__/
+*.pyc
