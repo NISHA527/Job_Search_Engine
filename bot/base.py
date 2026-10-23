@@ -5,11 +5,16 @@ import time
 from .common import pause
 
 
+COOKIE_BUTTON = re.compile(
+    r"^\s*(accept( all| all cookies| cookies| and (continue|close))?|allow( all)?( cookies)?|i accept|"
+    r"i agree|agree( and (continue|proceed|close))?|got it|ok(ay)?|understood|accept & continue)\s*$", re.I)
+
+
 class SiteBot:
     name = ""
     env_prefix = ""
 
-    def __init__(self, ctx, cfg, prof, tracker, dry_run=False):
+    def __init__(self, ctx, page, cfg, prof, tracker, dry_run=False):
         self.ctx = ctx
         self.cfg = cfg
         self.search = cfg["search"]
@@ -18,7 +23,7 @@ class SiteBot:
         self.dry_run = dry_run
         self.applied = 0
         self.max = int(self.search.get("max_applications_per_site", 15))
-        self.page = ctx.new_page()
+        self.page = page  # this portal's own tab
 
     # ---- helpers -------------------------------------------------------
     def creds(self):
@@ -50,7 +55,9 @@ class SiteBot:
         def blocked():
             title = (self.page.title() or "").lower()
             return ("just a moment" in title or "security check" in title
-                    or self.page.locator("iframe[src*='captcha'], iframe[title*='challenge']").count() > 0)
+                    # only a CAPTCHA you can see - Naukri and others keep an invisible reCAPTCHA on every page
+                    or self.page.locator("iframe[src*='captcha']:visible, iframe[title*='challenge']:visible")
+                    .evaluate_all("els => els.some(e => e.offsetWidth > 100 && e.offsetHeight > 100)"))
         if blocked():
             self.wait_until(lambda: not blocked(), "verification check shown - please solve it in Brave...")
 
@@ -77,7 +84,54 @@ class SiteBot:
                 continue
         return False
 
+    def note_questions(self, questions, job=None):
+        """Remember questions the bot had no answer for, so they can be added to config.yaml."""
+        path = self.tracker.path.parent / "unanswered_questions.txt"
+        known = set(path.read_text(encoding="utf-8").splitlines()) if path.exists() else set()
+        where = f"{self.name}: {(job or {}).get('company', '')}"
+        with open(path, "a", encoding="utf-8") as f:
+            for q in questions:
+                line = f"{q.strip()}    [{where}]"
+                if q.strip() and not any(l.startswith(q.strip() + "    [") for l in known):
+                    f.write(line + "\n")
+                    known.add(line)
+
+    def accept_cookies(self):
+        """Accept a cookie banner if one is showing (it often covers the Apply / Next buttons)."""
+        pg = self.page
+        known = ("#onetrust-accept-btn-handler, #CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, "
+                 "#CybotCookiebotDialogBodyButtonAccept, [data-automation-id='legalNoticeAcceptButton'], "
+                 "button#accept-recommended-btn-handler, .cc-allow, .cookie-accept, #cookie-accept")
+        try:
+            btn = pg.locator(known).first
+            if btn.count() and btn.is_visible():
+                btn.click(timeout=3000)
+                pg.wait_for_timeout(800)
+                return True
+            named = pg.get_by_role("button", name=COOKIE_BUTTON)
+            for i in range(min(named.count(), 4)):
+                if named.nth(i).is_visible():
+                    named.nth(i).click(timeout=3000)
+                    pg.wait_for_timeout(800)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def save_debug(self, scope, job=None):
+        """Save the HTML of a form the bot got stuck on (data/debug/), to fix the bot from it later."""
+        try:
+            folder = self.tracker.path.parent / "debug"
+            folder.mkdir(exist_ok=True)
+            name = re.sub(r"[^A-Za-z0-9]+", "_", f"{self.name}_{(job or {}).get('company', '')}")[:60]
+            (folder / f"{name}.html").write_text(scope.evaluate("e => e.outerHTML"), encoding="utf-8")
+        except Exception:
+            pass
+
     def wanted(self, title, company):
+        must = self.search.get("require_title_words") or []
+        if must and not any(re.search(r"\b" + re.escape(w) + r"\b", title or "", re.I) for w in must):
+            return False
         for word in self.search.get("exclude_title_words", []):
             if re.search(r"\b" + re.escape(word) + r"\b", title or "", re.I):
                 return False
@@ -89,11 +143,14 @@ class SiteBot:
             for loc in self.search["locations"]:
                 yield kw, loc
 
-    def close(self):
-        try:
-            self.page.close()
-        except Exception:
-            pass
+    def steps(self):
+        """Apply one job per step, so portals in different tabs can take turns.
+
+        Sites whose run() is a generator yield after every job; the others do all their work in one step.
+        """
+        work = self.run()
+        if work is not None:
+            yield from work
 
     # ---- implemented per site ----------------------------------------
     def login(self):

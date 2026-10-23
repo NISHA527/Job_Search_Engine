@@ -35,3 +35,12 @@ def launch_brave(cfg, root):
     )
     ctx.set_default_timeout(15000)
     return pw, ctx
+
+
+def open_tabs(ctx, count):
+    """Return `count` tabs (one per portal), reusing open ones and closing any extra tabs Brave restored."""
+    while len(ctx.pages) < count:
+        ctx.new_page()
+    for extra in ctx.pages[count:]:
+        extra.close()
+    return ctx.pages[:count]

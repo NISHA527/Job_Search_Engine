@@ -93,7 +93,7 @@ class IndeedBot(SiteBot):
             return
         button = pg.locator("#indeedApplyButton, button[aria-label*='Apply now']").first
         if not button.count():
-            self.tracker.record(self.name, jk, title, company, "external", url)
+            self.tracker.record(self.name, jk, title, company, "external_site", url)
             return
         if "applied" in button.inner_text().lower():
             self.tracker.record(self.name, jk, title, company, "already_applied", url)

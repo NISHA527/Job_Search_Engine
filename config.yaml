@@ -21,10 +21,13 @@ search:
   min_experience: 0
   max_experience: 2
   posted_within_days: 7
-  pages_per_search: 2
+  pages_per_search: 4
   max_applications_per_site: 15   # keep this low - portals flag accounts that apply too fast
+  linkedin_easy_apply_only: false # false = also apply on company sites (Workday is filled in automatically)
   # Skip jobs whose title contains any of these words
   exclude_title_words: [Senior, Sr, Lead, Manager, Architect, Principal, Director, Head]
+  # Only apply when the title has one of these words (keeps out Java / .NET developer jobs)
+  require_title_words: [QA, Test, Tester, Testing, Quality, SDET, Automation, Validation, Verification]
   exclude_companies: []
 
 browser:
@@ -34,17 +37,46 @@ browser:
 profile:
   first_name: Nisha
   last_name: Salehittal
-  full_name: Nisha Salehittal
+  full_name: Nisha V Salehittal
+  middle_name: V
   email: nishavsalehittal572@gmail.com
   phone: "8431442813"
   city: Bangalore
+  state: Karnataka
+  country: India
+  # Workday forms usually require these - fill them in, or those applications get skipped
+  address_line1: "7th Cross, Agara Village, Sector 1"
+  address_line2: "HSR Layout"
+  postal_code: "560102"
+  full_address: "7th Cross, Agara Village, Sector 1, HSR Layout, Bengaluru, Karnataka 560102"
+  permanent_address: "Honnavar, Uttara Kannada, Karnataka"
+  permanent_city: Honnavar
   github: https://github.com/NISHA527
-  linkedin_url: ""
+  linkedin_url: https://www.linkedin.com/in/nishavsalehittal/
   years_experience: 1
   # Sent to employers. Leave CTC blank ("") and jobs that ask for it are skipped instead of guessed.
   notice_period_days: 30
-  current_ctc: ""
-  expected_ctc: ""
+  current_ctc: "300000"           # 3 LPA, in rupees per year
+  expected_ctc: "500000"          # 5 LPA
+  current_ctc_lpa: "3"
+  # from the resume - used when a company site's form asks for education / work history
+  school: Presidency University
+  degree: Bachelor of Technology
+  field_of_study: Computer Science and Engineering
+  graduation_year: "2025"
+  # Skills from the resume. "Do you have experience with X?" is answered Yes (and 1 year) only when X is
+  # one of these; anything else (Databricks, AWS, trading...) gets No / 0 - the bot never claims other skills.
+  skills: [manual testing, software testing, automated software testing, automation testing, test automation,
+           quality assurance, qa, functional testing, regression testing, exploratory testing, ui testing,
+           integration testing, end-to-end testing, e2e testing, mobile testing, mobile app testing, app testing,
+           test case, test cases, test planning, defect tracking, bug tracking, api testing, rest api, api,
+           postman, selenium, selenium webdriver, jmeter, performance testing, jira, sql, mysql, postgresql,
+           database testing, java, python, javascript, html, css, git, github, github actions, agile, scrum,
+           sdlc, stlc, troubleshooting, technical support, web testing, web application testing]
+  experience:
+    - {title: Technical Support Engineer, company: Vedantu Innovation Technology}
+    - {title: App Testing Intern, company: Inexpose Trendzeel}
+  expected_ctc_lpa: "5"
   resume_file: resume.pdf         # put your resume in the documents folder
   photo_file: photo.jpg           # optional
   cover_letter_file: cover_letter.txt
@@ -53,23 +85,87 @@ profile:
 # case-insensitive) is found in the question wins. A list gives alternatives
 # for dropdowns/radio buttons. {field} is filled from the profile above.
 answers:
-  - {match: "first name",                          answer: "{first_name}"}
-  - {match: "last name|surname",                   answer: "{last_name}"}
+  # --- Workday / company-site questions (keep these above the general rules) ---
+  - {match: "phone device|device type",            answer: ["Mobile", "Cell", "Personal"]}
+  - {match: "country phone code|phone code|country code|dialing code", answer: ["India (+91)", "+91", "India"]}
+  - {match: "extension",                           answer: ""}
+  - {match: "how did you hear|^source",            answer: ["LinkedIn", "Job Board", "Social Media", "Website", "Other"]}
+  - {match: "previously (worked|been employed|applied)|former employee|current or former|worked for .* before|applied (to|with|at|for) .* before|interviewed (with|at)", answer: "No"}
+  - {match: "at least 18|18 years|age of 18",      answer: "Yes"}
+  - {match: "^are you currently (employed|working)\\??\\s*\\*?$", answer: "Yes"}
+  # family / government / conflict-of-interest questions - all No (confirmed by Nisha)
+  - {match: "relative|related to|family member|father|mother|spouse|sibling|relation(ship)? (with|to|who)|know anyone (who )?works", answer: ["No", "None", "Not applicable", "N/A"]}
+  - {match: "government|govt|public (sector|official)|politically exposed|armed forces|army|military|defen[cs]e (service|force)", answer: ["No", "None", "Not applicable", "N/A"]}
+  - {match: "current employee|currently (work|employed)(ing)? (at|for|with) (this|our|the) company|employee of (this|our)|conflict of interest", answer: ["No", "None", "Not applicable", "N/A"]}
+  - {match: "gender|^sex$|pronoun", answer: ["Female", "Woman", "She/Her", "F"]}
+  - {match: "disabilit|handicap|behinderung",                            answer: ["No, I do not have a disability", "No, I don't have a disability", "I do not have a disability", "No"]}
+  - {match: "ethnic|race|veteran|hispanic|sexual orientation", answer: ["I do not wish", "I don't wish", "Decline", "Prefer not", "Not Declared"]}
+  # answers confirmed by Nisha on 23 Oct 2026
+  - {match: "middle name|middle initial",          answer: "{middle_name}"}
+  - {match: "talent ?pool|future (opportunities|roles|openings|positions)|keep (my|your) (data|profile|information)|retain (my|your)|einverst", answer: ["Yes", "Ja", "Oui", "I agree"]}
+  - {match: "rotational|24 ?[*x] ?7|night shift|shift (timings?|work|schedule|basis)|work(ing)? in shifts", answer: "Yes"}
+  - {match: "variable|bonus|incentive|rsu|stock option|esop", answer: ["0", "None", "No"]}
+  - {match: "deemed export",                        answer: "Yes"}
+  # permanent / native address is Honnavar - keep these above the current-address rules
+  - {match: "permanent.{0,15}(city|town|location)|native|home ?town", answer: "{permanent_city}"}
+  - {match: "permanent.{0,15}address", answer: "{permanent_address}"}
+  - {match: "full address|(current|present|residential|correspondence|mailing) address|^address[*]?$", answer: "{full_address}"}
+  - {match: "address line 2|address 2|^locality", answer: "{address_line2}"}
+  - {match: "address line 1|address 1|street|house (no|number|name)|flat (no|number)|building (name|no|number)|door (no|number)", answer: "{address_line1}"}
+  - {match: "postal|zip|pin ?code",                answer: "{postal_code}"}
+  - {match: "^degree[*]?$|degree (type|level)|highest (degree|qualification|education)", answer: ["{degree}", "B.Tech", "B.E", "Bachelor's Degree", "Bachelors", "Bachelor"]}
+  - {match: "school|university|college|institution", answer: "{school}"}
+  - {match: "field of study|major|speciali[sz]ation|discipline|branch", answer: ["{field_of_study}", "Computer Science", "Computer Engineering"]}
+  - {match: "graduation (year|date)|year of (passing|graduation)|passing year", answer: "{graduation_year}"}
+  # --- written answers (drafted from the resume - edit freely; {company} / {job_title} are filled in per job) ---
+  - match: "excites you (in|about) (the )?(testing|qa|quality)|why (testing|qa)|interest(ed)? in (testing|qa|quality)"
+    answer: "I enjoy working out exactly how a feature should behave and then finding the edge cases that others miss. Seeing a defect I reported get fixed, and knowing users will never hit it, is very satisfying. Testing combines analytical thinking with care for the end user, and there is always something new to learn - from Postman API checks and SQL data validation to Selenium automation."
+  - match: "excites you about|why (do you want|are you interested|would you like) to (join|work)|why (this|our) company|why {0,1}.*join us|interest(ed)? in (this|our) (company|role|position)"
+    answer: "I'm excited about {company} because the {job_title} role lets me apply my hands-on QA experience - test case design, functional, regression and API testing - to a real product, while learning from an experienced engineering team. I want to grow as a QA engineer in a place that cares about quality, and this role is a great fit for that."
+  - match: "project.*(proud|best|favou?rite)|tell us about a project|describe a project"
+    answer: "On-Road Vehicle Breakdown Assistance: a web platform that connects stranded drivers with nearby mechanics. I developed and tested it end to end - functional, UI and SQL database testing to validate data integrity and that every request flow completes, and I logged defects and verified fixes through retesting. I'm also proud of Tech-Gram (https://github.com/NISHA527/Tech-gram), where I built responsive, accessible web components and validated their UI behaviour and stability. More work: https://github.com/NISHA527"
+  - {match: "tell us about yourself|introduce yourself|about you$|summary", answer: "{cover_letter}"}
+  - {match: "join.*in days|days.*(to )?join|available to join|joining time", answer: ["{notice_period_days}", "30 days", "1 month"]}
+  - {match: "before you can start|how soon can you|when can you (start|join)|start(ing)? date|availability to (start|join)|earliest (start|joining)", answer: ["30 days", "1 month", "{notice_period_days}"]}
+  - {match: "last working (day|date)|\\blwd\\b|relieving date", answer: "I am currently employed and serving a {notice_period_days}-day notice period, so I can join within {notice_period_days} days of an offer."}
+  - {match: "payroll company|(current|most recent|latest|last|present).{0,25}(company|employer|organi[sz]ation)", answer: "Vedantu Innovation Technology"}
+  - {match: "(current|most recent|latest|present).{0,25}(job )?(title|designation|role|position)", answer: "Technical Support Engineer"}
+  - {match: "how soon.{0,30}join|able to join|when can you join|notice to join", answer: ["{notice_period_days}", "30 days", "1 month"]}
+  - match: "reason for (the )?(job |career )?change|why (are you |do you want to )?(looking|leav|chang|switch)"
+    answer: "I want to move from technical support into a full-time QA engineering role. My App Testing internship confirmed that testing is what I enjoy most, and I'm looking for a team where I can grow my manual and automation testing skills."
+  - match: "automation testing experience|experience (in|with) (test )?automation|automation experience"
+    answer: "Hands-on but early-stage: I have written Selenium WebDriver tests in Java and API tests in Postman during my projects and internship, and I'm comfortable with Git and GitHub Actions. Most of my professional testing so far has been manual - functional, regression, exploratory and SQL data validation."
+  - {match: "offer in hand|other offers?|holding (an |any )?offer|pending offer", answer: ["No", "None"]}
+  - {match: "f2f|face to face|in-person interview|walk-?in|available for (an |the )?interview|attend (the |an )?interview", answer: "Yes"}
+  - {match: "first name|given name|vorname|pr[eé]nom|nombre",  answer: "{first_name}"}
+  - {match: "last name|surname|family name|familienname|nachname|nom de famille|apellido", answer: "{last_name}"}
   - {match: "full name|^name$|your name",          answer: "{full_name}"}
   - {match: "e-?mail",                             answer: "{email}"}
   - {match: "mobile|phone|contact number",         answer: "{phone}"}
   - {match: "github|portfolio|website",            answer: "{github}"}
   - {match: "linkedin",                            answer: "{linkedin_url}"}
   - {match: "cover letter",                        answer: "{cover_letter}"}
+  - {match: "k[uü]ndigungsfrist", answer: ["1 Monat", "4 Wochen", "30 Tage", "1 month", "30 days", "30"]}
+  - {match: "^total experience|overall experience|total (work |professional |it )?experience|relevant experience", answer: ["{years_experience}", "1 year", "1"]}
+  - {match: "referred|referral|referrer|employee referral", answer: ["N/A", "No", "None", "Not applicable"]}
+  - {match: "provide (any )?references|wish to (give|provide) references", answer: "No"}
   - {match: "notice",                              answer: ["{notice_period_days}", "1 Month", "30 Days", "15 to 30"]}
-  - {match: "expected.*(ctc|salary|compensation|package)", answer: "{expected_ctc}"}
-  - {match: "current.*(ctc|salary|compensation|package)",  answer: "{current_ctc}"}
+  # questions asking in lakhs ("in Lacs per annum", "LPA") get 3 / 5, the rest get the rupee amount
+  - {match: "expected.*(ctc|cost to company|salary|compensation|package).*(lac|lakh|lpa)", answer: "{expected_ctc_lpa}"}
+  - {match: "current.*(ctc|cost to company|salary|compensation|package).*(lac|lakh|lpa)",  answer: "{current_ctc_lpa}"}
+  - {match: "(ctc|cost to company|salary|compensation|package).*(lac|lakh|lpa)", answer: "{expected_ctc_lpa}"}
+  - {match: "expected.*(ctc|cost to company|salary|compensation|package)", answer: "{expected_ctc}"}
+  - {match: "current.*(ctc|cost to company|salary|compensation|package)",  answer: "{current_ctc}"}
   - {match: "ctc|salary|compensation",             answer: "{expected_ctc}"}
   - {match: "how many years|years of|years.*experience|experience.*years", answer: "{years_experience}"}
-  - {match: "city|current location|where are you|located|location", answer: "{city}"}
   - {match: "relocat|commut|on-?site|office|hybrid", answer: "Yes"}
+  - {match: "city|current location|where are you|located|location", answer: "{city}"}
   - {match: "sponsor",                             answer: "No"}
   - {match: "authori[sz]ed|legally|eligible to work", answer: "Yes"}
+  - {match: "^country|country of residence",      answer: "{country}"}
+  - {match: "\\bstate\\b|province",                answer: "{state}"}
   - {match: "bachelor|degree|graduat|b\\.?tech|b\\.?e\\b", answer: "Yes"}
   - {match: "english",                             answer: ["Professional", "Fluent", "Yes"]}
-  - {match: "immediate|join",                      answer: "Yes"}
+  # 30-day notice period, so not an immediate joiner
+  - {match: "immediate(ly)? join|join immediately|immediate joiner|immediately available|available immediately", answer: ["No", "Within 30 days", "30 days"]}
+  - {match: "willing to join|interested in joining|join (our|the) team", answer: "Yes"}

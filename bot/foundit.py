@@ -83,7 +83,7 @@ class FounditBot(SiteBot):
             self.tracker.record(self.name, job_id, title, company, "already_applied")
             return
         if "company" in label:
-            self.tracker.record(self.name, job_id, title, company, "external")
+            self.tracker.record(self.name, job_id, title, company, "external_site")
             return
         if self.dry_run:
             self.log(f"would apply: {title} @ {company}")
@@ -95,7 +95,7 @@ class FounditBot(SiteBot):
         pg.wait_for_timeout(4000)
         if len(self.ctx.pages) > pages_before:  # opened an external company site
             self.ctx.pages[-1].close()
-            self.tracker.record(self.name, job_id, title, company, "external")
+            self.tracker.record(self.name, job_id, title, company, "external_site")
             return
         status = self.finish_application({"title": title, "company": company}, card)
         self.tracker.record(self.name, job_id, title, company, status)

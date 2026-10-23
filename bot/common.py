@@ -50,7 +50,15 @@ COLLECT_FIELDS_JS = r"""
 }
 """
 
-PLACEHOLDER_OPTION = re.compile(r"^\s*(select|choose|--|please)", re.I)
+SKILL_QUESTION = re.compile(
+    r"(experience|worked|work(ing)? knowledge|familiar(ity)?|hands-on|proficien\w*|expertise|exposure)\b"
+    r".{0,60}?\b(with|in|on|using)\s+(?P<topic>.+)", re.I)
+# free-text "explain / describe" questions and language / salary questions are not yes-no skill checks
+NOT_A_SKILL_QUESTION = re.compile(r"^\s*(please )?(briefly )?(explain|describe|tell|share|list|elaborate)|english|"
+                                  r"language|ctc|salary|notice|relocat|commut|(?<![a-z])shifts?(?![a-z])", re.I)
+GENERIC_TOPIC = re.compile(r"^\W*(the\s+)?(total|overall|relevant|work|professional|industry|field|years?|"
+                           r"(it|software|tech(nology)?) industry|this (role|field|domain))\b", re.I)
+PLACEHOLDER_OPTION =re.compile(r"^\s*(select|choose|--|please)", re.I)
 
 
 def pause(low=0.8, high=2.2):
@@ -88,16 +96,37 @@ class Profile:
         None = no rule matches. [] = a rule matches but its profile value is blank, meaning
         "never guess this one" (e.g. salary not filled in) - the field is left empty.
         """
+        skill = self.skill_answer(question)
+        if skill is not None:
+            return skill
         for rx, ans in self.rules:
             if rx.search(question or ""):
                 out = []
                 for a in (ans if isinstance(ans, list) else [ans]):
                     a = str(a)
-                    a = self.cover_letter(job) if a == "{cover_letter}" else a.format_map(_Keep(self.p))
+                    fields = dict(self.p, company=(job or {}).get("company") or "your company",
+                                  job_title=(job or {}).get("title") or "this role")
+                    a = self.cover_letter(job) if a == "{cover_letter}" else a.format_map(_Keep(fields))
                     if a and "{" not in a:
                         out.append(a)
                 return out
         return None
+
+    def skill_answer(self, question):
+        """'Do you have experience with X?' / 'How many years in X?' answered from the resume skills list:
+        Yes / years_experience when X is on the resume, No / 0 otherwise. None = not a skill question."""
+        q = question or ""
+        m = SKILL_QUESTION.search(q)
+        if not m or NOT_A_SKILL_QUESTION.search(q):
+            return None
+        topic = m.group("topic")
+        if GENERIC_TOPIC.match(topic):
+            return None  # "experience in the industry", "work experience" - left to the normal rules
+        known = any(re.search(r"(?<!\w)" + re.escape(s.lower()) + r"(?!\w)", topic.lower())
+                    for s in self.p.get("skills") or [])
+        if re.search(r"how many|years|number of|how long", q, re.I):
+            return [str(self.p.get("years_experience", 1))] if known else ["0"]
+        return ["Yes"] if known else ["No"]
 
     def guess(self, question, job=None, numeric=False):
         """Answer with sensible fallbacks: years of experience for numbers, 'Yes' for yes/no."""
@@ -132,9 +161,14 @@ def pick_option(options, wanted):
         wl = w.lower().strip()
         if wl in low:
             return real[low.index(wl)]
+        if re.fullmatch(r"\d+(\.\d+)?", wl) and _range_option(low, [wl]) is not None:
+            return real[_range_option(low, [wl])]  # 1 -> "1-2 years", not "Less than 1 year"
         for i, o in enumerate(low):
-            if wl and re.search(r"\b" + re.escape(wl) + r"\b", o):
+            if wl and re.search(r"(?<!\w)" + re.escape(wl) + r"(?!\w)", o):  # also works for "+91"
                 return real[i]
+    in_range = _range_option(low, wanted or [])
+    if in_range is not None:
+        return real[in_range]
     if not wanted:
         for i, o in enumerate(low):
             if o in ("yes", "y"):
@@ -142,12 +176,77 @@ def pick_option(options, wanted):
     return real[0]
 
 
+def _matching_option(texts, wanted):
+    """Index of the option that really matches one of the wanted answers (no first-option fallback)."""
+    low = [t.lower().strip() for t in texts]
+    for w in wanted:
+        wl = w.lower().strip()
+        if wl in low:
+            return low.index(wl)
+        if re.fullmatch(r"\d+(\.\d+)?", wl) and _range_option(low, [wl]) is not None:
+            return _range_option(low, [wl])
+        for i, o in enumerate(low):
+            if wl and re.search(r"(?<!\w)" + re.escape(wl) + r"(?!\w)", o):  # also works for "+91"
+                return i
+    return _range_option(low, wanted)
+
+
+def _range_option(options, wanted):
+    """For a number like 1 (years) or 5 (LPA), the option whose range holds it: "0-1 years", "4 to 6 LPA", "5+"."""
+    for w in wanted:
+        if not re.fullmatch(r"\s*\d+(\.\d+)?\s*", str(w)):
+            continue
+        n = float(w)
+        for i, o in enumerate(options):
+            m = re.search(r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)", o)
+            if m and float(m.group(1)) <= n <= float(m.group(2)):
+                return i
+            m = re.search(r"(\d+(?:\.\d+)?)\s*\+|more than\s*(\d+)|above\s*(\d+)", o)
+            if m and n >= float(next(g for g in m.groups() if g)):
+                return i
+            m = re.search(r"(?:less than|below|under|<)\s*(\d+(?:\.\d+)?)", o)
+            if m and n < float(m.group(1)):
+                return i
+    return None
+
+
+def choose_combo(page, loc, wanted):
+    """Search-as-you-type dropdowns (Greenhouse, LinkedIn city...): click the option that matches.
+
+    Typing "India" can list "British Indian Ocean Territory" first, so never just take the first option;
+    if nothing matches, the field is left empty and the form won't be submitted.
+    """
+    options = page.locator("[role=option]:visible")
+
+    def pick():
+        texts = [t.strip() for t in options.all_inner_texts()]
+        i = _matching_option(texts, wanted)
+        if i is None:
+            return False
+        options.nth(i).click()
+        page.wait_for_timeout(500)
+        return True
+
+    loc.click()
+    page.wait_for_timeout(800)
+    if pick():  # plain dropdown: the list is already open
+        return True
+    for w in wanted:
+        loc.fill(w)
+        page.wait_for_timeout(1500)
+        if pick():
+            return True
+    loc.fill("")
+    page.keyboard.press("Escape")
+    return False
+
+
 def _numeric(value):
     m = re.search(r"\d+(\.\d+)?", value or "")
     return m.group(0) if m else None
 
 
-def fill_form(page, root, prof, job=None):
+def fill_form(page, root, prof, job=None, skip_files=False):
     """Fill every empty field inside `root` (a Locator) using the profile. Best effort, never raises."""
     prefix = f"jb{int(time.time() * 1000)}_"
     try:
@@ -157,10 +256,16 @@ def fill_form(page, root, prof, job=None):
     radio_groups = {}
     for f in fields:
         loc = page.locator(f'[data-jbot="{f["id"]}"]')
+        if "dateSection" in f["elId"] or f["label"] in ("Month", "Day", "Year"):
+            continue  # date pickers are filled as a whole date by the site handler, never part by part
         question = f"{f['group']} {f['label']}".strip()
+        if f["label"] and f["type"] != "radio" and prof.answers(f["label"], job) is not None:
+            question = f["label"]  # the field's own label first - a section title in front breaks "^country" rules
         t = f["type"]
         try:
             if t == "file":
+                if skip_files:
+                    continue
                 path = prof.file_for(question)
                 if path and not f["value"]:
                     loc.set_input_files(str(path))
@@ -184,11 +289,10 @@ def fill_form(page, root, prof, job=None):
                     continue
                 if t == "number" or re.search(r"numeric|decimal|whole number", question, re.I):
                     value = _numeric(value) or value
-                loc.fill(value)
                 if f["combo"]:
-                    page.wait_for_timeout(1200)
-                    loc.press("ArrowDown")
-                    loc.press("Enter")
+                    choose_combo(page, loc, prof.answers(question, job) or [value])
+                else:
+                    loc.fill(value)
             pause(0.2, 0.6)
         except Exception:
             continue

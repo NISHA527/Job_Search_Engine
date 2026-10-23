@@ -1,13 +1,25 @@
-from urllib.parse import urlencode
+import re
+from urllib.parse import quote, urlencode
 
 from .base import SiteBot
 from .common import fill_form, pause
+from .external import apply_external
+from .simpleform import REQUIRED_EMPTY_JS
 
-MODAL = ".jobs-easy-apply-modal, div[role='dialog'][aria-labelledby*='easy-apply'], div[data-test-modal][role='dialog']"
+# LinkedIn's 2026 job search: cards carry the job id in componentkey, Easy Apply opens a native <dialog>.
+# The older selectors are kept as fallbacks in case an account still gets the old layout.
+CARDS = "div[role='button'][componentkey^='job-card-component-ref-'], li[data-occludable-job-id]"
+EASY_APPLY = "button[aria-label^='Easy Apply to' i]:visible, button#jobs-apply-button-id:visible"
+COMPANY_SITE = "a[aria-label='Apply on company website']:visible, button[aria-label^='Apply to' i]:visible"
+MODAL = "dialog[open], .jobs-easy-apply-modal, div[data-test-modal][role='dialog']"
+# LinkedIn ignores a plain location name in the new search and shows all of India, so use its location ids
+GEO_IDS = {"bangalore": "105214831", "bengaluru": "105214831", "hyderabad": "105556991", "pune": "114806696",
+           "chennai": "106888327", "mumbai": "106164952", "india": "102713980"}
 
 
 class LinkedInBot(SiteBot):
-    """Applies only to 'Easy Apply' jobs (the rest redirect to company sites)."""
+    """Applies to 'Easy Apply' jobs inside LinkedIn and to jobs whose Apply button goes to a company site
+    (company sites on Workday are filled in automatically; others are logged as external_site)."""
     name = "linkedin"
     env_prefix = "LINKEDIN"
 
@@ -42,114 +54,197 @@ class LinkedInBot(SiteBot):
 
     def search_url(self, kw, loc, start):
         params = {
-            "keywords": kw, "location": loc, "f_AL": "true", "sortBy": "DD", "start": start,
+            "keywords": kw, "sortBy": "DD", "start": start,
             "f_TPR": f"r{int(self.search.get('posted_within_days', 7)) * 86400}",
         }
+        geo = GEO_IDS.get(loc.strip().lower())
+        if geo:
+            params["geoId"] = geo
+        else:
+            params["location"] = loc
         if int(self.search.get("max_experience", 2)) <= 2:
             params["f_E"] = "1,2"  # internship + entry level
-        return "https://www.linkedin.com/jobs/search/?" + urlencode(params)
+        if self.search.get("linkedin_easy_apply_only"):
+            params["f_AL"] = "true"
+        return "https://www.linkedin.com/jobs/search-results/?" + urlencode(params, quote_via=quote)
 
     def run(self):
-        pg = self.page
         for kw, loc in self.searches():
             for page_no in range(int(self.search.get("pages_per_search", 2))):
                 if self.done():
                     return
-                pg.goto(self.search_url(kw, loc, page_no * 25), wait_until="domcontentloaded")
-                pg.wait_for_timeout(4000)
-                self.check_human_verification()
-                cards = pg.locator("li[data-occludable-job-id]")
-                if cards.count() == 0:
+                self.results_url = self.search_url(kw, loc, page_no * 25)
+                self.open_results()
+                ids = self.card_ids()
+                if not ids:
                     break
-                for i in range(cards.count()):
+                for job_id in ids:
                     if self.done():
                         return
-                    self.handle_card(cards.nth(i))
+                    if self.handle_card(job_id) is not False:
+                        yield  # let the other tab take a turn
 
-    def handle_card(self, card):
+    def open_results(self):
         pg = self.page
-        job_id = card.get_attribute("data-occludable-job-id")
-        if not job_id or self.tracker.seen(self.name, job_id):
-            return
+        pg.goto(self.results_url, wait_until="domcontentloaded")
+        self.check_human_verification()
+        for attempt in range(3):
+            try:
+                pg.locator(CARDS).first.wait_for(timeout=15000)
+                break
+            except Exception:
+                # the new search page sometimes hangs on a spinner (e.g. right after the feed) - reload it
+                pg.reload(wait_until="domcontentloaded")
+        pg.wait_for_timeout(2000)
+
+    def card_ids(self):
+        ids = self.page.locator(CARDS).evaluate_all(
+            "els => els.map(e => (e.getAttribute('componentkey') || '').replace('job-card-component-ref-', '')"
+            " || e.getAttribute('data-occludable-job-id')).filter(Boolean)")
+        self.log(f"{len(ids)} jobs on this results page")
+        return ids
+
+    def find_card(self, job_id):
+        selector = f"[componentkey='job-card-component-ref-{job_id}'], li[data-occludable-job-id='{job_id}']"
+        card = self.page.locator(selector).first
+        if not card.count():
+            self.open_results()  # we were on another page (company site / job page) - reload the list
+        return card if card.count() else None
+
+    def job_info(self, card):
+        """Title from the card's 'Dismiss <title> job' button, company from the card text."""
+        title = ""
+        dismiss = card.locator("button[aria-label^='Dismiss']").first
+        if dismiss.count():
+            title = re.sub(r"^Dismiss\s+|\s+job$", "", dismiss.get_attribute("aria-label") or "").strip()
+        if not title:
+            title = self.text(self.page, ".job-details-jobs-unified-top-card__job-title, h1")
+        lines = [l.strip() for l in card.inner_text().split("\n") if l.strip()]
+        lines = [l for l in lines if title not in l and not l.startswith("Selected")]
+        company = lines[0] if lines else ""
+        return title, company
+
+    def handle_card(self, job_id):
+        pg = self.page
+        if self.tracker.seen(self.name, job_id):
+            return False
+        card = self.find_card(job_id)
+        if not card:
+            return False
         try:
             card.scroll_into_view_if_needed()
             card.click()
         except Exception:
             return
-        pause(1.5, 3)
-        title = self.text(pg, ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, h1")
-        company = self.text(pg, ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name")
+        pg.wait_for_timeout(3000)
+        title, company = self.job_info(card)
         url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+        job = {"title": title, "company": company}
         if not self.wanted(title, company):
             return
-        button = pg.locator("button#jobs-apply-button-id, .jobs-apply-button--top-card button, button.jobs-apply-button").first
-        label = (button.inner_text() if button.count() else "").lower()
-        if "easy apply" not in label:
-            if "applied" in self.text(pg, ".jobs-s-apply, .artdeco-inline-feedback").lower():
+        if self.tracker.applied_to_role(company, title):
+            self.tracker.record(self.name, job_id, title, company, "already_applied", url)
+            return  # same role listed again - don't send a second application
+        easy = pg.locator(EASY_APPLY).first
+        external = pg.locator(COMPANY_SITE).first
+        if not easy.count() and not external.count():
+            if pg.get_by_text(re.compile(r"^Applied\b|application (was )?submitted", re.I)).count():
                 self.tracker.record(self.name, job_id, title, company, "already_applied", url)
             return
-        if self.dry_run:
-            self.log(f"would apply: {title} @ {company}")
-            return
-        button.click()
-        status = self.easy_apply({"title": title, "company": company})
+        if not easy.count():
+            if self.dry_run or self.search.get("linkedin_easy_apply_only"):
+                self.log(f"would apply on company site: {title} @ {company}")
+                return
+            status = apply_external(self, external, job)
+        else:
+            if self.dry_run:
+                self.log(f"would apply (Easy Apply): {title} @ {company}")
+                return
+            easy.click()
+            status = self.easy_apply(job)
         self.tracker.record(self.name, job_id, title, company, status, url)
         if status == "applied":
             self.applied += 1
-        pause(2, 5)
+        pause(2, 4)
 
     def easy_apply(self, job):
         pg = self.page
-        modal = pg.locator(MODAL).first
+        modal = pg.locator(MODAL).last
         try:
-            modal.wait_for(timeout=8000)
+            modal.wait_for(timeout=10000)
         except Exception:
             return "failed"
-        errors_in_a_row = 0
-        for _ in range(15):
+        stuck = 0
+        for _ in range(20):
             pause(1, 2)
-            fill_form(pg, modal, self.prof, job)
-            follow = modal.locator("#follow-company-checkbox")
-            if follow.count() and follow.is_checked():
-                modal.locator("label[for='follow-company-checkbox']").click()
+            # a saved resume is usually already selected; only upload ours when none is
+            resume_chosen = modal.locator("input[type=radio][aria-label$='.pdf' i]:checked, "
+                                          "input[type=radio][aria-label$='.docx' i]:checked").count() > 0
+            fill_form(pg, modal, self.prof, job, skip_files=resume_chosen)
+            self.unfollow_company(modal)
 
-            submit = modal.locator("button[aria-label='Submit application']")
+            submit = modal.get_by_role("button", name=re.compile(r"^submit", re.I))
             if submit.count():
-                submit.click()
-                pg.wait_for_timeout(3000)
+                submit.first.click()
+                pg.wait_for_timeout(4000)
                 self.close_dialogs()
                 return "applied"
-            nxt = modal.locator("button[aria-label='Review your application'], "
-                                "button[aria-label='Continue to next step']").first
+            nxt = modal.get_by_role("button", name=re.compile(r"^(next|review|continue)", re.I))
             if not nxt.count():
                 break
-            nxt.click()
-            pg.wait_for_timeout(1500)
-            if modal.locator(".artdeco-inline-feedback--error").count():
-                errors_in_a_row += 1
-                if errors_in_a_row >= 2:  # a question we can't answer - add a rule to config.yaml
+            before = modal.inner_text()
+            nxt.first.click()
+            pg.wait_for_timeout(2000)
+            if modal.inner_text() == before:  # page didn't advance - a required question is unanswered
+                stuck += 1
+                if stuck >= 2:
+                    errors = [t.strip() for t in modal.locator(
+                        "[role=alert], .artdeco-inline-feedback--error").all_inner_texts() if t.strip()]
+                    open_qs = self.open_questions(modal)
+                    self.log(f"stuck on: {open_qs or errors or 'unknown'} - add a rule in config.yaml")
+                    self.note_questions(open_qs or errors, job)
+                    self.save_debug(modal, job)
                     break
             else:
-                errors_in_a_row = 0
+                stuck = 0
         self.discard()
         return "skipped"
 
+    def open_questions(self, modal):
+        try:
+            return modal.evaluate(REQUIRED_EMPTY_JS)
+        except Exception:
+            return []
+
+    def unfollow_company(self, modal):
+        boxes = modal.locator("input[type=checkbox]")
+        for i in range(boxes.count()):
+            box = boxes.nth(i)
+            try:
+                label = box.evaluate("el => (el.labels && el.labels[0] ? el.labels[0].innerText : '') + ' ' + el.id")
+                if re.search(r"follow", label, re.I) and box.is_checked():
+                    box.uncheck(force=True)
+            except Exception:
+                continue
+
     def close_dialogs(self):
-        for _ in range(2):
-            dismiss = self.page.locator("button[aria-label='Dismiss']").first
-            if dismiss.count() and dismiss.is_visible():
-                dismiss.click()
-                self.page.wait_for_timeout(800)
+        pg = self.page
+        for _ in range(3):
+            done = pg.get_by_role("button", name=re.compile(r"^(done|dismiss|close)$", re.I))
+            if not done.count():
+                break
+            try:
+                done.first.click()
+            except Exception:
+                break
+            pg.wait_for_timeout(800)
 
     def discard(self):
         pg = self.page
         try:
-            pg.locator("button[aria-label='Dismiss']").first.click()
-            pg.wait_for_timeout(1000)
-            confirm = pg.locator("button[data-control-name='discard_application_confirm_btn']")
-            if confirm.count():
-                confirm.click()
-            else:
-                self.click_button(pg, r"^discard$")
+            pg.locator(MODAL).last.locator("button[aria-label='Dismiss']").first.click()
+            pg.wait_for_timeout(1200)
+            if not self.click_button(pg, r"^discard$"):
+                pg.keyboard.press("Escape")
         except Exception:
             pg.keyboard.press("Escape")

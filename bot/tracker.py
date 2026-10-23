@@ -2,7 +2,8 @@ import csv
 import datetime
 
 # Jobs with these statuses are never retried. "skipped" / "failed" jobs are retried next run.
-FINAL = {"applied", "already_applied", "external"}
+# "external_site" = company website the bot cannot fill in (only Workday is supported).
+FINAL = {"applied", "already_applied", "external_site", "unconfirmed"}  # unconfirmed: never resend
 
 
 class Tracker:
@@ -12,11 +13,21 @@ class Tracker:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self.done = set()
+        self.applied_roles = set()  # (company, title) - the same role is often listed several times
         if path.exists():
             with open(path, newline="", encoding="utf-8") as f:
                 for row in csv.DictReader(f):
                     if row["status"] in FINAL:
                         self.done.add((row["site"], row["job_id"]))
+                    if row["status"] == "applied":
+                        self.applied_roles.add(self.role(row["company"], row["title"]))
+
+    @staticmethod
+    def role(company, title):
+        return ((company or "").strip().lower(), (title or "").strip().lower())
+
+    def applied_to_role(self, company, title):
+        return self.role(company, title) in self.applied_roles
 
     def seen(self, site, job_id):
         return (site, str(job_id)) in self.done
@@ -34,4 +45,6 @@ class Tracker:
             })
         if status in FINAL:
             self.done.add((site, str(job_id)))
+        if status == "applied":
+            self.applied_roles.add(self.role(company, title))
         print(f"  [{site}] {status:<15} {title} @ {company}")

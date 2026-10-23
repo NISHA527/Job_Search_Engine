@@ -5,12 +5,13 @@
     python main.py --dry-run            # search and list jobs, apply to nothing
 """
 import argparse
+import sys
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 
-from bot.browser import launch_brave
+from bot.browser import launch_brave, open_tabs
 from bot.common import Profile
 from bot.foundit import FounditBot
 from bot.indeed import IndeedBot
@@ -23,6 +24,12 @@ BOTS = {"linkedin": LinkedInBot, "naukri": NaukriBot, "foundit": FounditBot, "in
 
 
 def main():
+    # job pages contain symbols (↵, ₹, emoji) the Windows console can't show - print them as "?" instead of crashing
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description="Auto-apply to jobs in Brave")
     ap.add_argument("--sites", nargs="+", choices=list(BOTS), help="portals to run (default: enabled in config)")
     ap.add_argument("--dry-run", action="store_true", help="search and list matching jobs without applying")
@@ -39,22 +46,43 @@ def main():
     prof.check()
     tracker = Tracker(ROOT / "data" / "applied_jobs.csv")
     pw, ctx = launch_brave(cfg, ROOT)
+    tabs = open_tabs(ctx, len(sites))
     results = {}
     try:
-        for site in sites:
-            print(f"\n===== {site.upper()} =====")
-            bot = BOTS[site](ctx, cfg, prof, tracker, args.dry_run)
+        # 1) log in to every portal first - each portal gets its own tab
+        print("\n===== LOGIN =====")
+        ready = []
+        for site, page in zip(sites, tabs):
+            bot = BOTS[site](ctx, page, cfg, prof, tracker, args.dry_run)
+            page.bring_to_front()
             try:
                 if bot.login():
-                    bot.run()
+                    print(f"  [{site}] logged in")
+                    ready.append(bot)
                 else:
                     print(f"  [{site}] not logged in - skipping")
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                print(f"  [{site}] stopped early: {e}")
-            results[site] = bot.applied
-            bot.close()
+                print(f"  [{site}] login failed: {e}")
+
+        # 2) then apply - the tabs take turns, one job each
+        print("\n===== APPLYING =====")
+        running = {bot: bot.steps() for bot in ready}
+        while running:
+            for bot, steps in list(running.items()):
+                bot.page.bring_to_front()
+                try:
+                    next(steps)
+                except StopIteration:
+                    print(f"  [{bot.name}] finished")
+                    del running[bot]
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    print(f"  [{bot.name}] stopped early: {e}")
+                    del running[bot]
+                results[bot.name] = bot.applied
     except KeyboardInterrupt:
         print("\nStopped by user.")
     finally:
