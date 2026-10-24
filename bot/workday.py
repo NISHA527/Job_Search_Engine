@@ -8,7 +8,7 @@ import os
 import re
 from urllib.parse import urlparse
 
-from .common import fill_form, pause, pick_option
+from .common import _matching_option, fill_form, pause
 
 
 def A(automation_id):
@@ -38,6 +38,7 @@ FIELD_QUESTIONS_JS = r"""
     question: (label ? label.innerText : (el.getAttribute('aria-label') || '')).replace(/\*/g, '').trim(),
     text: (el.innerText || el.value || '').trim(),
     selected: !!(field && field.querySelector('[data-automation-id="selectedItem"]')),
+    selectedText: (field && field.querySelector('[data-automation-id="selectedItem"]') || {}).innerText || '',
   };
 })
 """
@@ -140,7 +141,10 @@ class WorkdayApplier:
                     self.bot.note_questions(self.errors(), self.job)
                     self.bot.save_debug(pg.locator("body"), self.job)
                     self.log("add answers for these questions under answers: in config.yaml")
-                    return "skipped"
+                    if not self.bot.ask_user(self.errors(), self.job, lambda: self.current_step() != step):
+                        return "skipped"
+                    stuck = 0
+                    continue
                 self.fill_step()
                 button = pg.locator(NEXT).first
                 if re.search(r"submit", button.inner_text() or "", re.I):
@@ -161,7 +165,9 @@ class WorkdayApplier:
             self.log("could not create an account")
             return False
         self.log(f"creating account for {self.email}")
-        pg.locator(A("email")).first.fill(self.email)
+        email = pg.locator(A("email")).first
+        if email.is_enabled():  # some companies pre-fill the email and lock the box
+            email.fill(self.email)
         pg.locator(A("password")).first.fill(self.password)
         pg.locator(A("verifyPassword")).first.fill(self.password)
         box = pg.locator(f"{A('createAccountCheckbox')}, input[type=checkbox]").first
@@ -252,7 +258,8 @@ class WorkdayApplier:
 
     def fill_dates(self):
         """Workday dates are three boxes (MM / DD / YYYY). Start-date questions get today + notice period,
-        'today' / signature dates get today; any other date question is left for config.yaml."""
+        'today' / signature dates get today, date of birth comes from the profile; any other date question
+        is left for config.yaml."""
         pg = self.page
         wrappers = pg.locator(f"{A('dateInputWrapper')}:visible")
         for i in range(wrappers.count()):
@@ -265,16 +272,23 @@ class WorkdayApplier:
                     when = datetime.date.today() + datetime.timedelta(days=int(self.prof.p.get("notice_period_days", 30)))
                 elif re.search(r"today|signature|signed|current date|^\s*date\s*\*?\s*$", question, re.I):
                     when = datetime.date.today()
+                elif re.search(r"birth|\bdob\b|geburt", question, re.I) and self.prof.p.get("date_of_birth"):
+                    when = datetime.date.fromisoformat(str(self.prof.p["date_of_birth"]))
                 else:
                     continue
                 month = w.locator(f"{A('dateSectionMonth-input')}, input[aria-label='Month']").first
-                # a display layer sits on top of the MM / DD / YYYY boxes - click through it
+                day = w.locator(f"{A('dateSectionDay-input')}, input[aria-label='Day']").first
+                # German / European sites show DD.MM.YYYY - start in whichever box comes first
+                day_first = day.count() and day.evaluate(
+                    "(d, m) => !!(d.compareDocumentPosition(m) & Node.DOCUMENT_POSITION_FOLLOWING)", month.element_handle())
+                first, digits = (day, "%d%m%Y") if day_first else (month, "%m%d%Y")
+                # a display layer sits on top of the date boxes - click through it
                 w.scroll_into_view_if_needed(timeout=5000)
                 try:
-                    month.click(force=True, timeout=5000)
+                    first.click(force=True, timeout=5000)
                 except Exception:
-                    month.focus()
-                pg.keyboard.type(when.strftime("%m%d%Y"), delay=80)
+                    first.focus()
+                pg.keyboard.type(when.strftime(digits), delay=80)
                 pg.keyboard.press("Tab")
                 shown = w.inner_text().replace("\n", "")
                 self.log(f"date '{question.strip()[:40]}' -> {when:%d %b %Y} (form shows {shown[:20]!r})")
@@ -311,17 +325,19 @@ class WorkdayApplier:
         self.log("uploaded resume")
         pg.wait_for_timeout(4000)
 
-    def fill_dropdowns(self):
+    def fill_dropdowns(self, again=True):
         pg = self.page
         buttons = pg.locator("button[aria-haspopup='listbox']:visible")
         try:
             info = buttons.evaluate_all(FIELD_QUESTIONS_JS)
         except Exception:
             return
+        country_changed = False
         for i, f in enumerate(info):
-            if f["text"] and not UNANSWERED_DROPDOWN.match(f["text"]):
-                continue  # already answered
             wanted = self.prof.answers(f["question"], self.job)
+            answered = f["text"] and not UNANSWERED_DROPDOWN.match(f["text"])
+            if answered and not self.wrong_country(f["question"], f["text"], wanted):
+                continue
             if not wanted:
                 continue
             try:
@@ -329,14 +345,52 @@ class WorkdayApplier:
                 pg.wait_for_timeout(800)
                 options = pg.locator("[role='listbox'] [role='option']:visible")
                 labels = [t.strip() for t in options.all_inner_texts()]
-                choice = pick_option(labels, wanted)
-                if choice in labels:
-                    options.nth(labels.index(choice)).click()
+                choice = _matching_option(labels, wanted)
+                if choice is None:  # long lists (countries) only render a part - type to jump to it
+                    pg.keyboard.type(wanted[0][:5], delay=60)
+                    pg.wait_for_timeout(800)
+                    labels = [t.strip() for t in options.all_inner_texts()]
+                    choice = _matching_option(labels, wanted)
+                search = pg.locator("[role='listbox'] input:visible, [data-automation-id='searchBox'] input:visible, "
+                                    "input[role='combobox'][aria-expanded='true']:visible").first
+                if choice is None and search.count():  # some lists have their own search box - search for it
+                    search.fill(wanted[0])
+                    pg.wait_for_timeout(1200)
+                    labels = [t.strip() for t in options.all_inner_texts()]
+                    choice = _matching_option(labels, wanted)
+                if choice is None and self.arrow_to(wanted):  # walk the list with the keyboard
+                    country_changed = country_changed or bool(re.search(r"country", f["question"], re.I))
+                    pause(0.4, 0.8)
+                    continue
+                listbox = pg.locator("[role='listbox']:visible").last
+                for _ in range(30):  # typing doesn't jump in every list (States) - scroll down to the answer
+                    if choice is not None or not listbox.count():
+                        break
+                    # the scrolling box can be the list itself, something inside it or a wrapper around it
+                    moved = listbox.evaluate("el => { const up = []; for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) up.push(p);"
+                                             " const s = [el, ...el.querySelectorAll('*'), ...up]"
+                                             ".find(e => e.scrollHeight > e.clientHeight + 2 && getComputedStyle(e).overflowY !== 'visible') || el;"
+                                             " const top = s.scrollTop; s.scrollTop += s.clientHeight * 0.8;"
+                                             " return s.scrollTop !== top; }")
+                    pg.wait_for_timeout(300)
+                    labels = [t.strip() for t in options.all_inner_texts()]
+                    choice = _matching_option(labels, wanted)
+                    if not moved:
+                        break
+                if choice is not None:  # never fall back to the first option (that picked "Iceland" for India)
+                    options.nth(choice).click()
+                    country_changed = country_changed or bool(re.search(r"country", f["question"], re.I))
                 else:
+                    self.log(f"no option matching {wanted[:2]} for '{f['question'][:40]}' - list shows "
+                             f"{len(labels)} options: {labels[:8]}")
                     pg.keyboard.press("Escape")
                 pause(0.4, 0.8)
             except Exception:
                 pg.keyboard.press("Escape")
+        if country_changed and again:
+            # a new country reloads the State / Region list (and can redraw the form) - go over it once more
+            pg.wait_for_timeout(2000)
+            self.fill_dropdowns(again=False)
 
     def fill_multiselects(self):
         """Search-and-pick fields such as "How did you hear about us?"."""
@@ -347,9 +401,9 @@ class WorkdayApplier:
         except Exception:
             return
         for i, f in enumerate(info):
-            if f["selected"]:
-                continue
             wanted = self.prof.answers(f["question"], self.job)
+            if f["selected"] and not self.wrong_country(f["question"], f["selectedText"], wanted):
+                continue
             if not wanted:
                 continue
             for attempt in wanted:
@@ -362,8 +416,11 @@ class WorkdayApplier:
                     if not options.count():
                         continue
                     labels = [t.strip() for t in options.all_inner_texts()]
-                    choice = pick_option(labels, wanted)
-                    options.nth(labels.index(choice) if choice in labels else 0).click()
+                    choice = _matching_option(labels, wanted)
+                    if choice is None:  # no real match for this search - try the next wording
+                        pg.keyboard.press("Escape")
+                        continue
+                    options.nth(choice).click()
                     pg.wait_for_timeout(1000)
                     sub = pg.locator(f"{A('promptOption')}:visible")  # some lists open a second level
                     if sub.count():
@@ -372,6 +429,40 @@ class WorkdayApplier:
                     break
                 except Exception:
                     pg.keyboard.press("Escape")
+
+    def arrow_to(self, wanted, steps=80):
+        """Press Down through an open list until the highlighted option matches, then Enter.
+        Works when the list only draws the visible part (Workday State lists) because the
+        highlight - not the mouse - moves through it."""
+        pg = self.page
+        seen = None
+        for _ in range(steps):
+            pg.keyboard.press("ArrowDown")
+            pg.wait_for_timeout(60)
+            current = pg.evaluate("""() => {
+                const lb = [...document.querySelectorAll('[role=listbox]')].filter(e => e.offsetParent).pop();
+                const id = (lb && lb.getAttribute('aria-activedescendant'))
+                        || (document.activeElement && document.activeElement.getAttribute('aria-activedescendant'));
+                const el = (id && document.getElementById(id))
+                        || (lb && lb.querySelector('[role=option][aria-selected=true], [role=option]:focus, [role=option][data-focused]'))
+                        || (document.activeElement && document.activeElement.closest('[role=option]'));
+                return el ? el.innerText.trim() : '';
+            }""")
+            if current and _matching_option([current], wanted) is not None:
+                pg.keyboard.press("Enter")
+                pg.wait_for_timeout(500)
+                return True
+            if current and current == seen:
+                break  # reached the end of the list
+            seen = current
+        return False
+
+    @staticmethod
+    def wrong_country(question, current, wanted):
+        """A country / phone-code field already holding another country (resume autofill or an earlier
+        bad pick) - phone validation then fails, so it gets picked again."""
+        return bool(wanted and current and re.search(r"country|phone code", question, re.I)
+                    and _matching_option([current], wanted) is None)
 
     def tick_agreements(self):
         boxes = self.page.locator("input[type=checkbox]:visible")

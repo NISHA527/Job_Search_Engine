@@ -5,7 +5,7 @@ and the open questions are written to data/unanswered_questions.txt so they can 
 """
 import re
 
-from .common import fill_form, pause
+from .common import ACKNOWLEDGE, OPT_IN, fill_form, pause, tick
 
 SUCCESS = re.compile(r"thank(s| you)[^.]{0,20} (for )?(applying|your (application|interest))"
                      r"|application (has been |was )?(received|submitted|sent)|we('ve| have) received your application"
@@ -13,9 +13,8 @@ SUCCESS = re.compile(r"thank(s| you)[^.]{0,20} (for )?(applying|your (applicatio
 APPLY = re.compile(r"^\s*(apply( now| here| online| for this (job|position|role))?|i'?m interested|start application)\s*$", re.I)
 SUBMIT = re.compile(r"^\s*(submit( application| your application)?|send( application)?|apply( now)?|finish|complete application)\s*$", re.I)
 # recognised by its email box too - after a resume upload some sites (Greenhouse) remove the file input
-ACKNOWLEDGE = re.compile(r"talent ?pool|future (roles|opportunities)|i have read|i agree|i acknowledge|i accept|i confirm|i consent to the processing|privacy (notice|policy|information)|terms (and|&) conditions", re.I)
-# talent pool / future roles: Nisha said yes - only marketing-type opt-ins stay unticked
-OPT_IN = re.compile(r"marketing|newsletter|sms|text message|whatsapp|job alerts|promotional", re.I)
+EMAIL_CODE = re.compile(r"security code|verification code|one[- ]time (code|password)|\botp\b|code (was )?sent to", re.I)
+NOT_AN_APPLICATION = re.compile(r"job alerts?|get notified|notify me|similar jobs|newsletter|subscribe|talent community sign", re.I)
 FORM = ("form:has(input[type=file]), form:has(input[type=email]), form:has(input[name*='email' i]), "
         "form:has(input[id*='email' i]), form:has(input[autocomplete=email])")
 
@@ -59,8 +58,19 @@ class SimpleFormApplier:
         self.bot.log(f"company site: {msg}")
 
     def form(self):
-        loc = self.page.locator(FORM).filter(has=self.page.locator("input:visible, textarea:visible")).first
-        return loc if loc.count() else None
+        # a "get job alerts" / newsletter box is also a form with an email field (Virtusa) - never the application
+        forms = self.page.locator(FORM).filter(has=self.page.locator("input:visible, textarea:visible"))
+        for i in range(forms.count()):
+            form = forms.nth(i)
+            try:  # its heading often sits just outside the <form> - read the box around it too
+                around = form.evaluate("f => { let b = f; for (let i = 0; i < 3 && b.parentElement; i++) {"
+                                       " if (b.parentElement.querySelectorAll('input').length > 4) break;"
+                                       " b = b.parentElement; } return b.innerText.slice(0, 600); }")
+            except Exception:
+                around = ""
+            if not NOT_AN_APPLICATION.search(around):
+                return form
+        return None
 
     def open_form(self):
         """Click through 'Apply' buttons until an application form shows up (at most 3 clicks)."""
@@ -107,10 +117,13 @@ class SimpleFormApplier:
         if pg.locator("input[type=password]:visible").count():
             self.log("this site needs an account - skipped")
             return "external_site"
+        self.accept_cookies()  # a consent popup (Ascendion) can cover the whole form
         form = self.form()
         self.upload_resume(form)
+        self.accept_cookies()
         fill_form(pg, form, self.prof, self.job, skip_files=True)
         pg.wait_for_timeout(2500)
+        self.accept_cookies()
         # some sites redraw the form after reading the resume and wipe earlier entries - fill again
         form = self.form() or form
         fill_form(pg, form, self.prof, self.job, skip_files=True)
@@ -121,12 +134,16 @@ class SimpleFormApplier:
             self.log(f"not submitted - no answer for: {missing}")
             self.bot.note_questions(missing, self.job)
             self.bot.save_debug(form, self.job)
-            return "skipped"
+            # she can fill the gaps and press Submit herself - then the checks below confirm it
+            if not self.bot.ask_user(missing, self.job, lambda: not self.form() or not form.evaluate(REQUIRED_EMPTY_JS)):
+                return "skipped"
         self.accept_cookies()  # a late banner can cover the Submit button
         if not self.submit(form):
             self.log("no Submit button found")
             return "skipped"
         pg.wait_for_timeout(6000)
+        if self.bot.agree_to_popup():  # some sites ask for consent only after Submit
+            pg.wait_for_timeout(6000)
         self.bot.check_human_verification()
         body = pg.locator("body").inner_text()
         confirmed_page = not self.form() and re.search(r"thank|confirm|success|submitted|received", pg.url + " " + body[:3000], re.I)
@@ -137,10 +154,26 @@ class SimpleFormApplier:
             self.log(f"form closed after Submit but no confirmation shown - check {pg.url}")
             return "unconfirmed"
         missing = form.evaluate(REQUIRED_EMPTY_JS) if self.form() else []
+        if missing and EMAIL_CODE.search(" ".join(missing)):
+            # Greenhouse (Celonis) emails a security code before it takes the application - only she can read it
+            self.log("the site emailed you a security code - type it into Brave and click Submit")
+            if self.bot.ask_user(["Security code from your email"], self.job, lambda: not self.form()):
+                pg.wait_for_timeout(4000)
+                body = pg.locator("body").inner_text()
+                if SUCCESS.search(body) or re.search(r"thank|confirm|success|submitted|received", pg.url + " " + body[:3000], re.I):
+                    self.log("application submitted (the site confirmed it)")
+                    return "applied"
+                return "unconfirmed"
+            return "skipped"
         if missing:
             self.bot.note_questions(missing, self.job)
-        self.log("the site did not confirm the application" + (f" - missing: {missing}" if missing else ""))
-        return "skipped"
+        if missing:  # the site refused the form - nothing was sent, so it can be retried
+            self.log(f"the site did not accept the application - missing: {missing}")
+            self.bot.save_debug(pg.locator("body"), self.job)
+            return "skipped"
+        # Submit was clicked and nothing is reported missing - it may well have gone through, so never resend it
+        self.log(f"submitted, but the site did not confirm it - check {pg.url[:90]}")
+        return "unconfirmed"
 
     def tick_acknowledgements(self, form):
         """Tick 'I have read the privacy notice' / 'I agree to the terms' boxes (as on the Workday account page).
@@ -154,7 +187,7 @@ class SimpleFormApplier:
                 label = box.evaluate("e => (e.labels && e.labels[0] ? e.labels[0].innerText : '')"
                                      " || (e.closest('label, fieldset, div') || e).innerText")
                 if ACKNOWLEDGE.search(label or "") and not OPT_IN.search(label or ""):
-                    box.check(force=True)
+                    tick(box)
             except Exception:
                 continue
 

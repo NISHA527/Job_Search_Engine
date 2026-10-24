@@ -16,6 +16,11 @@ search:
     - Manual Testing
     - Test Engineer
     - QA Analyst
+    - Automation Test Engineer
+    - SDET
+    - Software Engineer
+    - Software Developer
+    - Associate Software Engineer
   locations:
     - Bangalore
   min_experience: 0
@@ -25,9 +30,13 @@ search:
   max_applications_per_site: 15   # keep this low - portals flag accounts that apply too fast
   linkedin_easy_apply_only: false # false = also apply on company sites (Workday is filled in automatically)
   # Skip jobs whose title contains any of these words
-  exclude_title_words: [Senior, Sr, Lead, Manager, Architect, Principal, Director, Head]
-  # Only apply when the title has one of these words (keeps out Java / .NET developer jobs)
-  require_title_words: [QA, Test, Tester, Testing, Quality, SDET, Automation, Validation, Verification]
+  # (Civil / Mechanical / Electrical / Sales engineer jobs don't fit a software resume - remove these to include them)
+  exclude_title_words: [Senior, Sr, Lead, Manager, Architect, Principal, Director, Head,
+                        Civil, Mechanical, Electrical, Sales, Site Engineer, Field Engineer]
+  # Only apply when the title has one of these words - Nisha (24 Oct 2026): any engineer / developer role,
+  # testing or software development
+  require_title_words: [QA, Test, Tester, Testing, Quality, SDET, SDE, Automation, Validation, Verification,
+                        Engineer, Engineering, Developer, Development, Software, Programmer]
   exclude_companies: []
 
 browser:
@@ -39,6 +48,7 @@ profile:
   last_name: Salehittal
   full_name: Nisha V Salehittal
   middle_name: V
+  date_of_birth: "2003-05-13"     # YYYY-MM-DD (13 May 2003)
   email: nishavsalehittal572@gmail.com
   phone: "8431442813"
   city: Bangalore
@@ -86,26 +96,43 @@ profile:
 # for dropdowns/radio buttons. {field} is filled from the profile above.
 answers:
   # --- Workday / company-site questions (keep these above the general rules) ---
+  # yes/no questions whose wording also hits the location / employer rules below ("...where this position is located")
+  - {match: "eligible to work|authori[sz]ed to work|right to work|legally (allowed|permitted) to work", answer: "Yes"}
+  - {match: "(are you|currently) an? (current|existing) .{0,30}employee|current .{0,30}employee\\?", answer: ["No", "None", "Not applicable", "N/A"]}
+  # "Are you currently working at Cisco?" / "ever been issued a Cisco employee ID" - always about the hiring company
+  - {match: "(currently|presently|now) (working|employed) (at|for|with) \\w|ever (been )?issued .{0,40}(employee|email|badge)|(employee|staff) (id|number) or .{0,30}email", answer: ["No", "None", "N/A"]}
+  - {match: "reasonable accommodation|require (an |any )?accommodation|need (an |any )?accommodation", answer: ["No", "None", "Not required", "N/A"]}
+  - {match: "background (check|verification|screening)|criminal record check|drug (test|screen)", answer: ["Yes", "I agree", "I consent"]}
   - {match: "phone device|device type",            answer: ["Mobile", "Cell", "Personal"]}
   - {match: "country phone code|phone code|country code|dialing code", answer: ["India (+91)", "+91", "India"]}
   - {match: "extension",                           answer: ""}
   - {match: "how did you hear|^source",            answer: ["LinkedIn", "Job Board", "Social Media", "Website", "Other"]}
-  - {match: "previously (worked|been employed|applied)|former employee|current or former|worked for .* before|applied (to|with|at|for) .* before|interviewed (with|at)", answer: "No"}
+  - {match: "previously (worked|been employed|applied)|former employee|current or former|ever (worked|been employed)|(worked|employed) (for|at|with) .* (before|previously|in the past)|applied (to|with|at|for) .* before|interviewed (with|at)", answer: "No"}
   - {match: "at least 18|18 years|age of 18",      answer: "Yes"}
   - {match: "^are you currently (employed|working)\\??\\s*\\*?$", answer: "Yes"}
   # family / government / conflict-of-interest questions - all No (confirmed by Nisha)
-  - {match: "relative|related to|family member|father|mother|spouse|sibling|relation(ship)? (with|to|who)|know anyone (who )?works", answer: ["No", "None", "Not applicable", "N/A"]}
+  # "If yes, give the name ... If not please mention NA" follow-ups - write exactly what they ask for
+  - {match: "if (not|no),? (please )?(mention|write|enter|type|put) (na|n/a)", answer: "NA"}
+  - {match: "relative|related to|family member|father|mother|spouse|sibling|relation(ship)? (with|to|who)|know (anyone|someone|any ?body|any employee)( who)? (work|employed|current)", answer: ["No", "None", "Not applicable", "N/A"]}
   - {match: "government|govt|public (sector|official)|politically exposed|armed forces|army|military|defen[cs]e (service|force)", answer: ["No", "None", "Not applicable", "N/A"]}
   - {match: "current employee|currently (work|employed)(ing)? (at|for|with) (this|our|the) company|employee of (this|our)|conflict of interest", answer: ["No", "None", "Not applicable", "N/A"]}
   - {match: "gender|^sex$|pronoun", answer: ["Female", "Woman", "She/Her", "F"]}
+  - {match: "salutation|^title[*]?$|prefix", answer: ["Ms.", "Ms", "Miss"]}
   - {match: "disabilit|handicap|behinderung",                            answer: ["No, I do not have a disability", "No, I don't have a disability", "I do not have a disability", "No"]}
   - {match: "ethnic|race|veteran|hispanic|sexual orientation", answer: ["I do not wish", "I don't wish", "Decline", "Prefer not", "Not Declared"]}
   # answers confirmed by Nisha on 23 Oct 2026
   - {match: "middle name|middle initial",          answer: "{middle_name}"}
+  # confirmed by Nisha on 24 Oct 2026
+  - {match: "date of birth|birth ?date|\\bdob\\b|geburtsdatum", answer: "13/05/2003"}
+  - {match: "convict|criminal|incarcerat|felony|offen[cs]e|arrested|court case|pending case", answer: ["No", "None", "Not applicable", "N/A"]}
   - {match: "talent ?pool|future (opportunities|roles|openings|positions)|keep (my|your) (data|profile|information)|retain (my|your)|einverst", answer: ["Yes", "Ja", "Oui", "I agree"]}
+  # I agree / I do not agree, terms, privacy, declarations - always agree (Nisha, 24 Oct 2026); marketing opt-ins excluded
+  - {match: "^(?!.*(marketing|newsletter|sms|whatsapp|promotional|job alerts)).*(agree|consent|acknowledg|declar|certify|i confirm|i hereby confirm|true and (correct|accurate)|terms (and|&) conditions|terms of (use|service)|privacy (notice|policy|statement))", answer: ["I agree", "Yes, I agree", "I Agree", "Agree", "Yes", "I accept", "Accept", "I acknowledge", "I confirm"]}
   - {match: "rotational|24 ?[*x] ?7|night shift|shift (timings?|work|schedule|basis)|work(ing)? in shifts", answer: "Yes"}
   - {match: "variable|bonus|incentive|rsu|stock option|esop", answer: ["0", "None", "No"]}
   - {match: "deemed export",                        answer: "Yes"}
+  # "where are you residing" / "which state do you belong to" -> Karnataka (Nisha, 24 Oct 2026)
+  - {match: "^(?!.*country)(?=.*(resid|belong|domicile|which state|native state|home state|\\bstate\\b))(?!.*address)", answer: ["{state}", "Karnataka", "N/A", "Not Applicable", "Outside US", "Outside the US", "Other", "None"]}  # US-only State lists (New Relic) offer N/A
   # permanent / native address is Honnavar - keep these above the current-address rules
   - {match: "permanent.{0,15}(city|town|location)|native|home ?town", answer: "{permanent_city}"}
   - {match: "permanent.{0,15}address", answer: "{permanent_address}"}
@@ -141,7 +168,8 @@ answers:
   - {match: "last name|surname|family name|familienname|nachname|nom de famille|apellido", answer: "{last_name}"}
   - {match: "full name|^name$|your name",          answer: "{full_name}"}
   - {match: "e-?mail",                             answer: "{email}"}
-  - {match: "mobile|phone|contact number",         answer: "{phone}"}
+  # not just "mobile" - "One mobile product interaction you love" is an essay, not a phone field
+  - {match: "^\\W*(mobile|cell)\\W*$|(mobile|cell|phone|contact|whatsapp) ?(number|no\\b|#)|^\\W*(phone|telephone)\\b", answer: "{phone}"}
   - {match: "github|portfolio|website",            answer: "{github}"}
   - {match: "linkedin",                            answer: "{linkedin_url}"}
   - {match: "cover letter",                        answer: "{cover_letter}"}
@@ -163,7 +191,7 @@ answers:
   - {match: "sponsor",                             answer: "No"}
   - {match: "authori[sz]ed|legally|eligible to work", answer: "Yes"}
   - {match: "^country|country of residence",      answer: "{country}"}
-  - {match: "\\bstate\\b|province",                answer: "{state}"}
+  - {match: "\\bstate\\b|province",                answer: ["{state}", "N/A", "Not Applicable", "Outside US", "Outside the US", "Other", "None"]}
   - {match: "bachelor|degree|graduat|b\\.?tech|b\\.?e\\b", answer: "Yes"}
   - {match: "english",                             answer: ["Professional", "Fluent", "Yes"]}
   # 30-day notice period, so not an immediate joiner

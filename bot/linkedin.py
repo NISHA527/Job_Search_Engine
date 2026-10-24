@@ -12,6 +12,7 @@ CARDS = "div[role='button'][componentkey^='job-card-component-ref-'], li[data-oc
 EASY_APPLY = "button[aria-label^='Easy Apply to' i]:visible, button#jobs-apply-button-id:visible"
 COMPANY_SITE = "a[aria-label='Apply on company website']:visible, button[aria-label^='Apply to' i]:visible"
 MODAL = "dialog[open], .jobs-easy-apply-modal, div[data-test-modal][role='dialog']"
+APPLICATION_SENT = re.compile(r"(your )?application (was )?sent", re.I)
 # LinkedIn ignores a plain location name in the new search and shows all of India, so use its location ids
 GEO_IDS = {"bangalore": "105214831", "bengaluru": "105214831", "hyderabad": "105556991", "pune": "114806696",
            "chennai": "106888327", "mumbai": "106164952", "india": "102713980"}
@@ -175,8 +176,13 @@ class LinkedInBot(SiteBot):
         except Exception:
             return "failed"
         stuck = 0
-        for _ in range(20):
+        for _ in range(30):
             pause(1, 2)
+            if not modal.count() or APPLICATION_SENT.search(modal.inner_text()):
+                # finished by hand while the bot waited
+                sent = APPLICATION_SENT.search(pg.locator("body").inner_text())
+                self.close_dialogs()
+                return "applied" if sent else "unconfirmed"
             # a saved resume is usually already selected; only upload ours when none is
             resume_chosen = modal.locator("input[type=radio][aria-label$='.pdf' i]:checked, "
                                           "input[type=radio][aria-label$='.docx' i]:checked").count() > 0
@@ -197,6 +203,9 @@ class LinkedInBot(SiteBot):
             pg.wait_for_timeout(2000)
             if modal.inner_text() == before:  # page didn't advance - a required question is unanswered
                 stuck += 1
+                if stuck >= 2 and self.fix_yes_no_numbers(modal):
+                    stuck = 0
+                    continue
                 if stuck >= 2:
                     errors = [t.strip() for t in modal.locator(
                         "[role=alert], .artdeco-inline-feedback--error").all_inner_texts() if t.strip()]
@@ -204,7 +213,10 @@ class LinkedInBot(SiteBot):
                     self.log(f"stuck on: {open_qs or errors or 'unknown'} - add a rule in config.yaml")
                     self.note_questions(open_qs or errors, job)
                     self.save_debug(modal, job)
-                    break
+                    if not self.ask_user(open_qs or errors, job,
+                                         lambda: not modal.count() or modal.inner_text() != before):
+                        break
+                    stuck = 0
             else:
                 stuck = 0
         self.discard()
@@ -215,6 +227,23 @@ class LinkedInBot(SiteBot):
             return modal.evaluate(REQUIRED_EMPTY_JS)
         except Exception:
             return []
+
+    def fix_yes_no_numbers(self, modal):
+        """'Do you have experience with X?' asked as a number box rejects Yes/No ("Invalid input") -
+        answer in years instead: No -> 0, Yes -> total experience."""
+        ids = modal.evaluate(r"""root => [...root.querySelectorAll('input[type=text]')].filter(el => {
+            if (!/^(yes|no)$/i.test(el.value.trim())) return false;
+            let box = el;
+            for (let i = 0; i < 5 && box; i++, box = box.parentElement)
+              if (box.querySelectorAll('input').length === 1 && /invalid input|whole number|decimal number/i.test(box.innerText)) return true;
+            return false;
+          }).map(el => el.getAttribute('data-jbot'))""")
+        for jbot in ids:
+            box = modal.locator(f'[data-jbot="{jbot}"]')
+            years = "0" if box.input_value().strip().lower() == "no" else str(self.prof.p.get("years_experience", 1))
+            box.fill(years)
+            self.log(f"answered a yes/no number box with {years}")
+        return bool(ids)
 
     def unfollow_company(self, modal):
         boxes = modal.locator("input[type=checkbox]")

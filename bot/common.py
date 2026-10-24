@@ -2,13 +2,15 @@
 import random
 import re
 import time
+import unicodedata
 
 # Tags every visible form field inside `root` with data-jbot="<prefix><n>" and describes it.
 COLLECT_FIELDS_JS = r"""
 (root, prefix) => {
   const out = [];
   let n = 0;
-  const textOf = (el) => (el ? (el.innerText || el.textContent || '') : '').trim();
+  // Material-UI puts a zero-width space in every input's outline - not real text
+  const textOf = (el) => (el ? (el.innerText || el.textContent || '') : '').replace(/[​-‍﻿]/g, '').trim();
   for (const el of root.querySelectorAll('input, select, textarea')) {
     const type = (el.type || el.tagName).toLowerCase();
     if (['hidden', 'submit', 'button', 'search', 'image', 'reset'].includes(type)) continue;
@@ -32,8 +34,16 @@ COLLECT_FIELDS_JS = r"""
       if (rg) group = rg.getAttribute('aria-label') || '';
     }
     if (!label && !group) {
-      const box = el.parentElement && el.parentElement.parentElement;
-      label = textOf(box).slice(0, 200);
+      // Material-UI forms (Kulfi) put "Current city *" in a plain div a few levels above the input -
+      // climb until a box has some text, but stop before one that holds other fields too
+      for (let box = el.parentElement, i = 0; box && i < 5 && !label; box = box.parentElement, i++) {
+        // (multi-line MUI boxes keep a hidden aria-hidden twin of the textarea - don't count it)
+        if (box.querySelectorAll('input:not([type=hidden]):not([aria-hidden=true]), select, textarea:not([aria-hidden=true])').length > 1) break;
+        label = textOf(box).slice(0, 200);
+      }
+    }
+    if (!label && el.name && !/^[0-9a-f-]{20,}$/i.test(el.name)) {
+      label = el.name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_\-\[\]]+/g, ' ');  // firstName -> "first Name"
     }
     const id = prefix + (n++);
     el.setAttribute('data-jbot', id);
@@ -55,10 +65,17 @@ SKILL_QUESTION = re.compile(
     r".{0,60}?\b(with|in|on|using)\s+(?P<topic>.+)", re.I)
 # free-text "explain / describe" questions and language / salary questions are not yes-no skill checks
 NOT_A_SKILL_QUESTION = re.compile(r"^\s*(please )?(briefly )?(explain|describe|tell|share|list|elaborate)|english|"
-                                  r"language|ctc|salary|notice|relocat|commut|(?<![a-z])shifts?(?![a-z])", re.I)
+                                  r"language|ctc|salary|notice|relocat|commut|(?<![a-z])shifts?(?![a-z])|"
+                                  # "Have you or a close family member worked for KPMG in an audit function in the
+                                  # last 2 years?" is a yes/no conflict check, not "years of audit experience"
+                                  r"family|relative|spouse|have you (or .{0,30})?(ever )?(worked|been employed)", re.I)
 GENERIC_TOPIC = re.compile(r"^\W*(the\s+)?(total|overall|relevant|work|professional|industry|field|years?|"
                            r"(it|software|tech(nology)?) industry|this (role|field|domain))\b", re.I)
 PLACEHOLDER_OPTION =re.compile(r"^\s*(select|choose|--|please)", re.I)
+# "I agree" / terms / privacy boxes are always ticked, required or not (Nisha asked for this)
+ACKNOWLEDGE = re.compile(r"talent ?pool|future (roles|opportunities)|i have read|agree|acknowledge|i accept|accept the|i confirm|consent|certify|declare|privacy (notice|policy|information)|terms (and|&) conditions|terms of (use|service)", re.I)
+# talent pool / future roles: Nisha said yes - only marketing-type opt-ins stay unticked
+OPT_IN = re.compile(r"marketing|newsletter|sms|text message|whatsapp|job alerts|promotional", re.I)
 
 
 def pause(low=0.8, high=2.2):
@@ -148,6 +165,12 @@ class Profile:
         return self.resume if self.resume.exists() else None
 
 
+def _plain(text):
+    """Lower-case and without accent marks - Workday spells it "Karnātaka", we write "Karnataka"."""
+    text = unicodedata.normalize("NFKD", str(text or "")).lower().strip()
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
 def pick_option(options, wanted):
     """Choose the option that best matches one of the wanted answers (falls back to the first real option).
 
@@ -156,9 +179,9 @@ def pick_option(options, wanted):
     real = [o for o in options if o and not PLACEHOLDER_OPTION.match(o)]
     if not real or wanted == []:
         return None
-    low = [o.lower().strip() for o in real]
+    low = [_plain(o) for o in real]
     for w in wanted or []:
-        wl = w.lower().strip()
+        wl = _plain(w)
         if wl in low:
             return real[low.index(wl)]
         if re.fullmatch(r"\d+(\.\d+)?", wl) and _range_option(low, [wl]) is not None:
@@ -178,9 +201,9 @@ def pick_option(options, wanted):
 
 def _matching_option(texts, wanted):
     """Index of the option that really matches one of the wanted answers (no first-option fallback)."""
-    low = [t.lower().strip() for t in texts]
+    low = [_plain(t) for t in texts]
     for w in wanted:
-        wl = w.lower().strip()
+        wl = _plain(w)
         if wl in low:
             return low.index(wl)
         if re.fullmatch(r"\d+(\.\d+)?", wl) and _range_option(low, [wl]) is not None:
@@ -210,13 +233,28 @@ def _range_option(options, wanted):
     return None
 
 
+def tick(box):
+    """Tick a checkbox - also the hidden ones under a styled box (Oracle Recruiting / Pearson), which
+    Playwright's check() can't click: then click the input itself so the site's script sees the change."""
+    try:
+        box.check(force=True, timeout=3000)
+    except Exception:
+        pass
+    if not box.is_checked():
+        box.evaluate("el => el.click()")
+
+
 def choose_combo(page, loc, wanted):
     """Search-as-you-type dropdowns (Greenhouse, LinkedIn city...): click the option that matches.
 
     Typing "India" can list "British Indian Ocean Territory" first, so never just take the first option;
     if nothing matches, the field is left empty and the form won't be submitted.
     """
-    options = page.locator("[role=option]:visible")
+    # react-select (Greenhouse) options carry an id like "react-select-question_123-option-4" instead of a role
+    options = page.locator("[role=option]:visible, [id^='react-select-'][id*='-option-']:visible, .select__option:visible")
+    listbox = loc.get_attribute("aria-controls")
+    if listbox:  # some sites (Ascendion) list plain <li>s without role=option inside the controlled list
+        options = options.or_(page.locator(f"[id='{listbox}'] li:visible"))
 
     def pick():
         texts = [t.strip() for t in options.all_inner_texts()]
@@ -233,10 +271,18 @@ def choose_combo(page, loc, wanted):
         return True
     for w in wanted:
         loc.fill(w)
-        page.wait_for_timeout(1500)
-        if pick():
-            return True
+        for _ in range(5):  # big lists (4000+ regions on Vialto) take a few seconds to filter
+            page.wait_for_timeout(1000)
+            if pick():
+                return True
     loc.fill("")
+    try:  # note what the list offers, so a rule can be written for it (e.g. a US-only State list)
+        loc.click()
+        page.wait_for_timeout(800)
+        shown = [t.strip() for t in options.all_inner_texts()][:12]
+        print(f"  no option matching {list(wanted)[:2]} - the list shows: {shown}", flush=True)
+    except Exception:
+        pass
     page.keyboard.press("Escape")
     return False
 
@@ -273,8 +319,9 @@ def fill_form(page, root, prof, job=None, skip_files=False):
             elif t == "radio":
                 radio_groups.setdefault(f["name"] or f["group"], []).append(f)
             elif t == "checkbox":
-                if f["required"] and not f["checked"]:
-                    loc.check(force=True)
+                agree = ACKNOWLEDGE.search(question) and not OPT_IN.search(question)
+                if (f["required"] or agree) and not f["checked"]:
+                    tick(loc)
             elif f["tag"] == "select":
                 current = f["options"][f["selectedIndex"]] if f["selectedIndex"] >= 0 else ""
                 if f["selectedIndex"] <= 0 or PLACEHOLDER_OPTION.match(current):
